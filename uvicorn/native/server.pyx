@@ -3,45 +3,41 @@ import time
 from email.utils import formatdate
 
 
-cdef inline long calc_count(long counter):
+cdef inline unsigned int calc_counter(unsigned int counter):
     return (counter + 1) % 864000
 
 
-cdef bint tick(object server, long counter):
-    if counter % 10 == 0:
-        current_time = time.time()
-        current_date = formatdate(current_time, usegmt=True).encode()
-
-        if server.config.date_header:
-            date_header = [(b"date", current_date)]
-        else:
-            date_header = []
-
-        server.server_state.default_headers = date_header + server.config.encoded_headers
-
-        # Callback to `callback_notify` once every `timeout_notify` seconds.
-        if server.config.callback_notify is not None:
-            if current_time - server.last_notified > server.config.timeout_notify:  # pragma: full coverage
-                server.last_notified = current_time
-                return True
-    return False
+cdef inline bint check_counter(unsigned int counter):
+    return counter % 10 == 0 
 
 
 class ServerWrapper:
 
     async def main_loop(self) -> None:
-        cdef long counter = 0
-        should_exit = await self.on_tick(counter)
-        while not should_exit:
-            counter = calc_count(counter)
-            await asyncio.sleep(0.1)
-            should_exit = await self.on_tick(counter)
+        cdef unsigned int counter = 0
 
-    async def on_tick(self, counter: int) -> bool:
-        # Update the default headers, once per second.
-        if tick(self, counter):
+        should_exit = await self.on_tick(True)
+        while not should_exit:
+            counter = calc_counter(counter)
+            await asyncio.sleep(0.1)
+            should_exit = await self.on_tick(check_counter(counter))
+
+    async def on_tick(self, change_time: bool = False) -> bool:
+        if change_time:
+            current_time = time.time()
+            current_date = formatdate(current_time, usegmt=True).encode()
+
+            if self.config.date_header:
+                date_header = [(b"date", current_date)]
+            else:
+                date_header = []
+
+            self.server_state.default_headers = date_header + self.config.encoded_headers
+
             # Callback to `callback_notify` once every `timeout_notify` seconds.
-            await self.config.callback_notify()
+            if self.config.callback_notify is not None:
+                if current_time - self.last_notified > self.config.timeout_notify:  # pragma: full coverage
+                    self.last_notified = current_time
 
         # Determine if we should exit.
         if self.should_exit:
