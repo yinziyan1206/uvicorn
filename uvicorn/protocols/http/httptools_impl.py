@@ -21,7 +21,7 @@ from uvicorn._types import (
 )
 from uvicorn.config import Config
 from uvicorn.logging import TRACE_LOG_LEVEL
-from uvicorn.native.protocols import HttpToolsProtocolWrapper
+from uvicorn.native.protocols import set_content
 from uvicorn.protocols.http.flow_control import CLOSE_HEADER, HIGH_WATER_LIMIT, FlowControl, service_unavailable
 from uvicorn.protocols.utils import get_client_addr, get_local_addr, get_path_with_query_string, get_remote_addr, is_ssl
 from uvicorn.server import ServerState
@@ -35,13 +35,13 @@ def _get_status_line(status_code: int) -> bytes:
         phrase = http.HTTPStatus(status_code).phrase.encode()
     except ValueError:
         phrase = b""
-    return b"".join([b"HTTP/1.1 ", str(status_code).encode(), b" ", phrase, b"\r\n"])
+    return b"".join((b"HTTP/1.1 ", str(status_code).encode(), b" ", phrase, b"\r\n"))
 
 
 STATUS_LINE = {status_code: _get_status_line(status_code) for status_code in range(100, 600)}
 
 
-class HttpToolsProtocol(asyncio.Protocol, HttpToolsProtocolWrapper):
+class HttpToolsProtocol(asyncio.Protocol):
     def __init__(
         self,
         config: Config,
@@ -173,6 +173,68 @@ class HttpToolsProtocol(asyncio.Protocol, HttpToolsProtocolWrapper):
             else:
                 self._unsupported_upgrade_warning()
 
+    def handle_websocket_upgrade(self) -> None:
+        if self.logger.level <= TRACE_LOG_LEVEL:
+            prefix = "%s:%d - " % self.client if self.client else ""
+            self.logger.log(TRACE_LOG_LEVEL, "%sUpgrading to WebSocket", prefix)
+
+        self.connections.discard(self)
+        method = self.scope["method"].encode()
+        output = [method, b" ", self.url, b" HTTP/1.1\r\n"]
+        for name, value in self.scope["headers"]:
+            output += [name, b": ", value, b"\r\n"]
+        output.append(b"\r\n")
+        protocol = self.ws_protocol_class(  # type: ignore[call-arg, misc]
+            config=self.config,
+            server_state=self.server_state,
+            app_state=self.app_state,
+        )
+        protocol.connection_made(self.transport)
+        protocol.data_received(b"".join(output))
+        self.transport.set_protocol(protocol)
+
+    def send_400_response(self, msg: str) -> None:
+        content = [STATUS_LINE[400]]
+        for name, value in self.server_state.default_headers:
+            content.extend([name, b": ", value, b"\r\n"])  # pragma: full coverage
+        content.extend(
+            [
+                b"content-type: text/plain; charset=utf-8\r\n",
+                b"content-length: " + str(len(msg)).encode("ascii") + b"\r\n",
+                b"connection: close\r\n",
+                b"\r\n",
+                msg.encode("ascii"),
+            ]
+        )
+        self.transport.write(b"".join(content))
+        self.transport.close()
+
+    def on_message_begin(self) -> None:
+        self.url = b""
+        self.expect_100_continue = False
+        self.headers = []
+        self.scope = {  # type: ignore[typeddict-item]
+            "type": "http",
+            "asgi": {"version": self.config.asgi_version, "spec_version": "2.4"},
+            "http_version": "1.1",
+            "server": self.server,
+            "client": self.client,
+            "scheme": self.scheme,  # type: ignore[typeddict-item]
+            "root_path": self.root_path,
+            "headers": self.headers,
+            "state": self.app_state.copy(),
+        }
+
+    # Parser callbacks
+    def on_url(self, url: bytes) -> None:
+        self.url += url
+
+    def on_header(self, name: bytes, value: bytes) -> None:
+        name = name.lower()
+        if name == b"expect" and value.lower() == b"100-continue":
+            self.expect_100_continue = True
+        self.headers.append((name, value))
+
     def on_headers_complete(self) -> None:
         http_version = self.parser.get_http_version()
         method = self.parser.get_method()
@@ -226,41 +288,43 @@ class HttpToolsProtocol(asyncio.Protocol, HttpToolsProtocolWrapper):
             self.flow.pause_reading()
             self.pipeline.appendleft((self.cycle, app))
 
-    def handle_websocket_upgrade(self) -> None:
-        if self.logger.level <= TRACE_LOG_LEVEL:
-            prefix = "%s:%d - " % self.client if self.client else ""
-            self.logger.log(TRACE_LOG_LEVEL, "%sUpgrading to WebSocket", prefix)
+    def on_body(self, body: bytes) -> None:
+        if (self.parser.should_upgrade() and self._should_upgrade()) or self.cycle.response_complete:
+            return
+        self.cycle.body += body
+        if len(self.cycle.body) > HIGH_WATER_LIMIT:
+            self.flow.pause_reading()
+        self.cycle.message_event.set()
 
-        self.connections.discard(self)
-        method = self.scope["method"].encode()
-        output = [method, b" ", self.url, b" HTTP/1.1\r\n"]
-        for name, value in self.scope["headers"]:
-            output += [name, b": ", value, b"\r\n"]
-        output.append(b"\r\n")
-        protocol = self.ws_protocol_class(  # type: ignore[call-arg, misc]
-            config=self.config,
-            server_state=self.server_state,
-            app_state=self.app_state,
-        )
-        protocol.connection_made(self.transport)
-        protocol.data_received(b"".join(output))
-        self.transport.set_protocol(protocol)
+    def on_message_complete(self) -> None:
+        if (self.parser.should_upgrade() and self._should_upgrade()) or self.cycle.response_complete:
+            return
+        self.cycle.more_body = False
+        self.cycle.message_event.set()
 
-    def send_400_response(self, msg: str) -> None:
-        content = [STATUS_LINE[400]]
-        for name, value in self.server_state.default_headers:
-            content.extend([name, b": ", value, b"\r\n"])  # pragma: full coverage
-        content.extend(
-            [
-                b"content-type: text/plain; charset=utf-8\r\n",
-                b"content-length: " + str(len(msg)).encode("ascii") + b"\r\n",
-                b"connection: close\r\n",
-                b"\r\n",
-                msg.encode("ascii"),
-            ]
-        )
-        self.transport.write(b"".join(content))
-        self.transport.close()
+    def on_response_complete(self) -> None:
+        # Callback for pipelined HTTP requests to be started.
+        self.server_state.total_requests += 1
+
+        if self.transport.is_closing():
+            return
+
+        self._unset_keepalive_if_required()
+
+        # Unpause data reads if needed.
+        self.flow.resume_reading()
+
+        # Unblock any pipelined events. If there are none, arm the
+        # Keep-Alive timeout instead.
+        if self.pipeline:
+            cycle, app = self.pipeline.pop()
+            task = self.loop.create_task(cycle.run_asgi(app))
+            task.add_done_callback(self.tasks.discard)
+            self.tasks.add(task)
+        else:
+            self.timeout_keep_alive_task = self.loop.call_later(
+                self.timeout_keep_alive, self.timeout_keep_alive_handler
+            )
 
     def shutdown(self) -> None:
         """
@@ -399,7 +463,7 @@ class RequestResponseCycle:
             headers = self.default_headers + list(message.get("headers", []))
 
             if CLOSE_HEADER in self.scope["headers"] and CLOSE_HEADER not in headers:
-                headers = headers + [CLOSE_HEADER]
+                headers = headers.append(CLOSE_HEADER)
 
             if self.access_log:
                 self.access_logger.info(
@@ -413,23 +477,8 @@ class RequestResponseCycle:
 
             # Write response status line and headers
             content = [STATUS_LINE[status_code]]
-
-            for name, value in headers:
-                if HEADER_RE.search(name):
-                    raise RuntimeError("Invalid HTTP header name.")  # pragma: full coverage
-                if HEADER_VALUE_RE.search(value):
-                    raise RuntimeError("Invalid HTTP header value.")
-
-                name = name.lower()
-                if name == b"content-length" and self.chunked_encoding is None:
-                    self.expected_content_length = int(value.decode())
-                    self.chunked_encoding = False
-                elif name == b"transfer-encoding" and value.lower() == b"chunked":
-                    self.expected_content_length = 0
-                    self.chunked_encoding = True
-                elif name == b"connection" and value.lower() == b"close":
-                    self.keep_alive = False
-                content.extend([name, b": ", value, b"\r\n"])
+            
+            set_content(self, content, headers)
 
             if self.chunked_encoding is None and self.scope["method"] != "HEAD" and status_code not in (204, 304):
                 # Neither content-length nor transfer-encoding specified
