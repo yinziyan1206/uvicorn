@@ -3,7 +3,7 @@ import time
 from email.utils import formatdate
 
 
-cdef long calc_count(long counter):
+cdef inline long calc_count(long counter):
     return (counter + 1) % 864000
 
 
@@ -30,7 +30,7 @@ cdef bint tick(object server, long counter):
 class ServerWrapper:
 
     async def main_loop(self) -> None:
-        counter = 0
+        cdef long counter = 0
         should_exit = await self.on_tick(counter)
         while not should_exit:
             counter = calc_count(counter)

@@ -90,6 +90,16 @@ compile_args = [
     { platforms = ["darwin"], arch = "x86_64", arg = "-I/usr/local/opt/llvm/include", depends_path = true, marker = "python_version <= '3.10'"  },
 ]
 
+[tool.hatch.build.targets.wheel.hooks.cython.options.directives]
+binding = true
+language_level = 3
+embedsignature = true
+c_string_type = "unicode"
+c_string_encoding = "utf-8"
+cdivision = true
+infer_types = true
+iterable_coroutine = true
+
 [tool.ruff]
 line-length = 120
 
