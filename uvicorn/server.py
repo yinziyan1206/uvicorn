@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Generator, Sequence, Union
 import click
 
 from uvicorn.config import Config
+from uvicorn.native.server import ServerWrapper
 
 if TYPE_CHECKING:
     from uvicorn.protocols.http.h11_impl import H11Protocol
@@ -48,7 +49,7 @@ class ServerState:
         self.default_headers: list[tuple[bytes, bytes]] = []
 
 
-class Server:
+class Server(ServerWrapper):
     def __init__(self, config: Config) -> None:
         self.config = config
         self.server_state = ServerState()
@@ -218,41 +219,6 @@ class Server:
                 port,
                 extra={"color_message": color_message},
             )
-
-    async def main_loop(self) -> None:
-        counter = 0
-        should_exit = await self.on_tick(counter)
-        while not should_exit:
-            counter += 1
-            counter = counter % 864000
-            await asyncio.sleep(0.1)
-            should_exit = await self.on_tick(counter)
-
-    async def on_tick(self, counter: int) -> bool:
-        # Update the default headers, once per second.
-        if counter % 10 == 0:
-            current_time = time.time()
-            current_date = formatdate(current_time, usegmt=True).encode()
-
-            if self.config.date_header:
-                date_header = [(b"date", current_date)]
-            else:
-                date_header = []
-
-            self.server_state.default_headers = date_header + self.config.encoded_headers
-
-            # Callback to `callback_notify` once every `timeout_notify` seconds.
-            if self.config.callback_notify is not None:
-                if current_time - self.last_notified > self.config.timeout_notify:  # pragma: full coverage
-                    self.last_notified = current_time
-                    await self.config.callback_notify()
-
-        # Determine if we should exit.
-        if self.should_exit:
-            return True
-        if self.config.limit_max_requests is not None:
-            return self.server_state.total_requests >= self.config.limit_max_requests
-        return False
 
     async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
         logger.info("Shutting down")
