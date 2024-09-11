@@ -2,11 +2,10 @@
 from libc.string cimport strlen
 
 
-cdef inline bint check_header_name(bytes name):
+cdef inline bint check_header_name(char * name):
     cdef Py_UCS4 ch
-    if name.endswith(b"{} \t\"]"):
-        ch = name[-8]
-        if '\x00' <= ch <= '\x1f' or ch == '\x7f' or ch in '()<>@,;:[':
+    for ch in name:
+        if '\x00' <= ch <= '\x20' or '\x3a' <= ch <= '\x3e' or ch in '"(),@[]{}':
             return False
     return True
 
