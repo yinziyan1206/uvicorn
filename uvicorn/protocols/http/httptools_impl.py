@@ -463,7 +463,7 @@ class RequestResponseCycle:
             headers = self.default_headers + list(message.get("headers", []))
 
             if CLOSE_HEADER in self.scope["headers"] and CLOSE_HEADER not in headers:
-                headers = headers.append(CLOSE_HEADER)
+                headers.append(CLOSE_HEADER)
 
             if self.access_log:
                 self.access_logger.info(
@@ -477,7 +477,6 @@ class RequestResponseCycle:
 
             # Write response status line and headers
             content = [STATUS_LINE[status_code]]
-            
             set_content(self, content, headers)
 
             if self.chunked_encoding is None and self.scope["method"] != "HEAD" and status_code not in (204, 304):
