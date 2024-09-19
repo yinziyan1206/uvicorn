@@ -249,7 +249,7 @@ class HttpToolsProtocol(asyncio.Protocol):
         if "%" in path:
             path = urllib.parse.unquote(path)
         full_path = self.root_path + path
-        full_raw_path = self.root_path.encode("ascii") + raw_path
+        full_raw_path = self.config.raw_root_path.encode("ascii") + raw_path
         self.scope["path"] = full_path
         self.scope["raw_path"] = full_raw_path
         self.scope["query_string"] = parsed_url.query or b""
@@ -461,9 +461,6 @@ class RequestResponseCycle:
 
             status_code = message["status"]
             headers = self.default_headers + list(message.get("headers", []))
-
-            if CLOSE_HEADER in self.scope["headers"] and CLOSE_HEADER not in headers:
-                headers.append(CLOSE_HEADER)
 
             if self.access_log:
                 self.access_logger.info(

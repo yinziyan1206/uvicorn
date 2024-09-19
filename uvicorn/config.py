@@ -250,6 +250,7 @@ class Config:
         self.server_header = server_header
         self.date_header = date_header
         self.root_path = root_path
+        self.raw_root_path = root_path.encode("ascii")
         self.limit_concurrency = limit_concurrency
         self.limit_max_requests = limit_max_requests
         self.backlog = backlog
