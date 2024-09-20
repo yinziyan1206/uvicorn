@@ -460,7 +460,7 @@ class RequestResponseCycle:
             self.waiting_for_100_continue = False
 
             status_code = message["status"]
-            headers = self.default_headers + list(message.get("headers", []))
+            headers = list(message.get("headers", []))
 
             if self.access_log:
                 self.access_logger.info(
@@ -474,6 +474,8 @@ class RequestResponseCycle:
 
             # Write response status line and headers
             content = [STATUS_LINE[status_code]]
+            for name, value in self.default_headers:
+                content.extend([name, b": ", value, b"\r\n"])
             set_content(self, content, headers)
 
             if self.chunked_encoding is None and self.scope["method"] != "HEAD" and status_code not in (204, 304):

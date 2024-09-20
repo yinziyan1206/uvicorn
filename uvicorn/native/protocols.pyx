@@ -1,19 +1,23 @@
+from libc.string cimport strlen
+
 
 CLOSE_HEADER = (b"connection", b"close")
 
 
 cdef inline bint check_header_name(char *name):
-    cdef Py_UCS4 ch
-    for ch in name:
-        if '\x00' <= ch <= '\x20' or '\x3a' <= ch <= '\x3e' or ch in '"(),@[]{}':
+    cdef char ch
+    for i in range(strlen(name)):
+        ch = name[i]
+        if b'\x00' <= ch <= b'\x20' or b'\x3a' <= ch <= b'\x3e' or ch in b'"(),@[]{}':
             return False
     return True
 
 
 cdef inline bint check_header_value(char *value):
-    cdef Py_UCS4 ch
-    for ch in value:
-        if '\x00' <= ch <= '\x08' or'\x0a' <= ch <= '\x1f' or ch == '\x7f':
+    cdef char ch
+    for i in range(strlen(value)):
+        ch = value[i]
+        if b'\x00' <= ch <= b'\x08' or b'\x0a' <= ch <= b'\x1f' or ch == b'\x7f':
             return False
     
     return True
